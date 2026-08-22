@@ -1,0 +1,28 @@
+{
+  "name": "kroger-reviews-scraper",
+  "version": "1.0.0",
+  "description": "Extract public Kroger product reviews by URL.",
+  "type": "module",
+  "dependencies": {
+    "apify": "^3.7.2",
+    "crawlee": "^3.18.1",
+    "patchright": "^1.60.0"
+  },
+  "devDependencies": {
+    "@apify/eslint-config": "^2.0.0",
+    "eslint": "^9.29.0",
+    "eslint-config-prettier": "^10.1.5",
+    "prettier": "^3.5.3",
+    "vitest": "^4.1.0"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint",
+    "lint:fix": "eslint --fix",
+    "test": "vitest run"
+  },
+  "author": "Shahid Irfan",
+  "license": "ISC"
+}

@@ -1,0 +1,11 @@
+{
+  "startUrls": [
+    "https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315"
+  ],
+  "keywordReview": "",
+  "results_wanted": 20,
+  "max_pages": 2,
+  "proxyConfiguration": {
+    "useApifyProxy": false
+  }
+}

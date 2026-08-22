@@ -1,0 +1,41 @@
+{
+  "actorSpecification": 1,
+  "views": {
+    "overview": {
+      "title": "Kroger reviews",
+      "transformation": {
+        "fields": [
+          "productLink",
+          "gtin13",
+          "title",
+          "reviewText",
+          "type",
+          "rating",
+          "recommended",
+          "incentivizedReview",
+          "helpfulVoteCount",
+          "notHelpfulVoteCount",
+          "userNickname",
+          "lastModificationTime"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "productLink": { "label": "Product URL", "format": "link" },
+          "gtin13": { "label": "GTIN-13", "format": "text" },
+          "title": { "label": "Title", "format": "text" },
+          "reviewText": { "label": "Review", "format": "text" },
+          "type": { "label": "Type", "format": "text" },
+          "rating": { "label": "Rating", "format": "number" },
+          "recommended": { "label": "Recommended", "format": "text" },
+          "incentivizedReview": { "label": "Incentivized", "format": "text" },
+          "helpfulVoteCount": { "label": "Helpful", "format": "number" },
+          "notHelpfulVoteCount": { "label": "Not helpful", "format": "number" },
+          "userNickname": { "label": "Nickname", "format": "text" },
+          "lastModificationTime": { "label": "Updated", "format": "text" }
+        }
+      }
+    }
+  }
+}
