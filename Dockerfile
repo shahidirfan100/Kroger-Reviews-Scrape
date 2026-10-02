@@ -3,7 +3,7 @@ FROM apify/actor-node:22
 COPY --chown=myuser:myuser package*.json Dockerfile ./
 
 RUN npm --quiet set progress=false \
-    && npm install --omit=dev \
+    && npm install --omit=dev --legacy-peer-deps --no-audit --no-fund \
     && node -e "import('impit').then(m => console.log('impit OK:', Boolean(m.Impit)))" \
     && rm -rf ~/.npm
 
