@@ -12,25 +12,25 @@ Kroger Reviews Scraper collects public customer reviews from Kroger product page
 
 ## What data can you extract from Kroger reviews?
 
-| Field | Description |
-|-------|-------------|
-| `productLink` | Kroger product URL supplied for the review collection. |
-| `gtin13` | Product barcode extracted from the URL. |
-| `reviewId` | Review identifier when published by Kroger. |
-| `submissionId` | Review submission identifier when available. |
-| `title` | Review headline. |
-| `reviewText` | Full customer review content. |
-| `rating` | Star rating value. |
-| `recommended` | Whether the reviewer recommends the product. |
-| `helpfulVoteCount` | Helpful vote count. |
-| `notHelpfulVoteCount` | Not-helpful vote count. |
-| `userNickname` | Public reviewer nickname when available. |
-| `syndicated` | Whether the review is marked as syndicated. |
-| `featured` | Whether the review is marked as featured. |
-| `ratingsOnly` | Whether the record contains a rating without written content. |
-| `submissionTime` | Review submission timestamp object. |
-| `lastModificationTime` | Last modification timestamp object. |
-| `client` | Source client label when available. |
+| Field                  | Description                                                   |
+| ---------------------- | ------------------------------------------------------------- |
+| `productLink`          | Kroger product URL supplied for the review collection.        |
+| `gtin13`               | Product barcode extracted from the URL.                       |
+| `id`                   | Review identifier when published by Kroger.                   |
+| `title`                | Review headline.                                              |
+| `reviewText`           | Full customer review content.                                 |
+| `rating`               | Star rating value.                                            |
+| `recommended`          | Whether the reviewer recommends the product.                  |
+| `helpfulVoteCount`     | Helpful vote count.                                           |
+| `notHelpfulVoteCount`  | Not-helpful vote count.                                       |
+| `userNickname`         | Public reviewer nickname when available.                      |
+| `syndicated`           | Whether the review is marked as syndicated.                   |
+| `featured`             | Whether the review is marked as featured.                     |
+| `ratingsOnly`          | Whether the record contains a rating without written content. |
+| `incentivizedReview`   | Whether the review came from an incentivized program.         |
+| `type`                 | Review record type as published by Kroger.                    |
+| `lastModificationTime` | Last modification timestamp object.                           |
+| `client`               | Source client label when available.                           |
 
 ## How to use Kroger Reviews Scraper
 
@@ -42,13 +42,13 @@ Kroger Reviews Scraper collects public customer reviews from Kroger product page
 
 ## Input Parameters
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `startUrls` | Array | Yes | Prefilled example URL | One or more Kroger product URLs, including URLs with fulfillment query parameters. |
-| `results_wanted` | Integer | No | `20` | Maximum number of reviews saved across all supplied products. |
-| `max_pages` | Integer | No | `10` | Maximum number of 64-review pages requested per product. |
-| `keywordReview` | String | No | Empty | Optional case-insensitive filter applied to `reviewText`. |
-| `proxyConfiguration` | Object | No | Apify Proxy enabled on cloud runs | Proxy settings for reliable scheduled or larger runs. |
+| Parameter            | Type    | Required | Default               | Description                                                                        |
+| -------------------- | ------- | -------- | --------------------- | ---------------------------------------------------------------------------------- |
+| `startUrls`          | Array   | Yes      | Prefilled example URL | One or more Kroger product URLs, including URLs with fulfillment query parameters. |
+| `results_wanted`     | Integer | No       | `20`                  | Maximum number of reviews saved across all supplied products.                      |
+| `max_pages`          | Integer | No       | `10`                  | Maximum number of 64-review pages requested per product.                           |
+| `keywordReview`      | String  | No       | Empty                 | Optional case-insensitive filter applied to `reviewText`.                          |
+| `proxyConfiguration` | Object  | No       | Disabled              | Proxy settings for reliable scheduled or larger runs.                              |
 
 ## Usage Examples
 
@@ -58,10 +58,8 @@ Collect the first 20 reviews from the supplied Kroger product:
 
 ```json
 {
-  "startUrls": [
-    "https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315"
-  ],
-  "results_wanted": 20
+    "startUrls": ["https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315"],
+    "results_wanted": 20
 }
 ```
 
@@ -71,12 +69,12 @@ Collect up to 100 reviews across two product URLs, with a page safety cap:
 
 ```json
 {
-  "startUrls": [
-    "https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315?fulfillment=PICKUP",
-    "https://www.kroger.com/p/fresh-banana-single/0000000004011?fulfillment=PICKUP"
-  ],
-  "results_wanted": 100,
-  "max_pages": 3
+    "startUrls": [
+        "https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315?fulfillment=PICKUP",
+        "https://www.kroger.com/p/fresh-banana-single/0000000004011?fulfillment=PICKUP"
+    ],
+    "results_wanted": 100,
+    "max_pages": 3
 }
 ```
 
@@ -86,12 +84,10 @@ Keep only reviews whose text mentions freshness:
 
 ```json
 {
-  "startUrls": [
-    "https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315"
-  ],
-  "results_wanted": 50,
-  "max_pages": 5,
-  "keywordReview": "fresh"
+    "startUrls": ["https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315"],
+    "results_wanted": 50,
+    "max_pages": 5,
+    "keywordReview": "fresh"
 }
 ```
 
@@ -101,20 +97,26 @@ Each dataset item represents one review. Fields that are not published for a par
 
 ```json
 {
-  "productLink": "https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315",
-  "gtin13": "0001111050315",
-  "title": "Great for baking",
-  "reviewText": "This cream whips well and works for desserts.",
-  "rating": 5,
-  "recommended": true,
-  "helpfulVoteCount": 2,
-  "notHelpfulVoteCount": 0,
-  "userNickname": "Anonymous",
-  "syndicated": false,
-  "submissionTime": {
-    "timezone": "America/New_York",
-    "value": "2026-01-15T16:30:41.000Z"
-  }
+    "productLink": "https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315",
+    "gtin13": "0001111050315",
+    "id": "60c23df1-d1e6-5587-9a8b-f2532aea927d",
+    "title": "Great for baking",
+    "reviewText": "This cream whips well and works for desserts.",
+    "rating": 5,
+    "recommended": true,
+    "helpfulVoteCount": 2,
+    "notHelpfulVoteCount": 0,
+    "userNickname": "Anonymous",
+    "syndicated": false,
+    "featured": false,
+    "ratingsOnly": false,
+    "incentivizedReview": false,
+    "type": "review",
+    "lastModificationTime": {
+        "timezone": "America/New_York",
+        "value": "2026-01-15T16:30:41.000Z"
+    },
+    "client": "kroger"
 }
 ```
 

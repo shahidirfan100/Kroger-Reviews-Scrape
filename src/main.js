@@ -1,9 +1,14 @@
 import { Actor, log } from 'apify';
 import { Dataset } from 'crawlee';
-import { chromium } from 'patchright';
+import { Impit } from 'impit';
 
 const PAGE_SIZE = 64;
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 4;
+const REQUEST_TIMEOUT_MS = 30_000;
+const RETRY_BASE_DELAY_MS = 1_000;
+const RETRY_MAX_DELAY_MS = 8_000;
+const BROWSER_PROFILE = 'chrome';
+const REVIEWS_HOST = 'https://www.kroger.com';
 
 function getUrlValue(urlItem) {
     return typeof urlItem === 'string' ? urlItem : urlItem?.url;
@@ -20,8 +25,8 @@ function getProductId(productUrl) {
     if (!/(^|\.)kroger\.com$/i.test(parsedUrl.hostname)) return null;
 
     const pathParts = parsedUrl.pathname.split('/').filter(Boolean);
-    const productId = pathParts.at(-1)?.match(/^(\d{8,14})(?:\D|$)/)?.[1]
-        || pathParts.find((part) => /^\d{8,14}$/.test(part));
+    const productId =
+        pathParts.at(-1)?.match(/^(\d{8,14})(?:\D|$)/)?.[1] || pathParts.find((part) => /^\d{8,14}$/.test(part));
 
     return productId ? { productId, canonicalUrl: parsedUrl.href } : null;
 }
@@ -58,92 +63,132 @@ function cleanReview(review, productUrl, productId) {
     return record && typeof record === 'object' ? record : null;
 }
 
-function getBrowserProxy(proxyUrl) {
-    if (!proxyUrl) return undefined;
-
-    const parsed = new URL(proxyUrl);
-    return {
-        server: `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ''}`,
-        ...(parsed.username && { username: decodeURIComponent(parsed.username) }),
-        ...(parsed.password && { password: decodeURIComponent(parsed.password) }),
-    };
-}
-
-async function createApiClient(proxyUrl) {
-    const context = await chromium.launchPersistentContext('./patchright-profile', {
-        channel: 'chrome',
-        headless: false,
-        noViewport: true,
-        args: ['--disable-quic'],
-        ...(proxyUrl && { proxy: getBrowserProxy(proxyUrl) }),
+function sleep(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
     });
-    const page = await context.newPage();
-    let originReady = false;
-
-    return {
-        async fetchJson(url) {
-            if (!originReady) {
-                try {
-                    await page.goto('https://www.kroger.com', { waitUntil: 'commit', timeout: 30_000 });
-                } catch (error) {
-                    const reason = String(error.message || error).split(/\r?\n/, 1)[0];
-                    log.warning(`Kroger origin warm-up failed (${reason}); continuing with the API fetch`);
-                }
-                originReady = true;
-            }
-
-            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-                try {
-                    const result = await page.evaluate(async (apiUrl) => {
-                        const response = await fetch(apiUrl, { credentials: 'include' });
-                        return { status: response.status, body: await response.text() };
-                    }, url);
-                    if (result.status < 200 || result.status >= 300) {
-                        throw new Error(`Kroger API returned HTTP ${result.status}`);
-                    }
-                    return JSON.parse(result.body);
-                } catch (error) {
-                    if (attempt === MAX_RETRIES) throw error;
-                    const reason = String(error.message || error).split(/\r?\n/, 1)[0];
-                    const waitMs = attempt * 1500;
-                    log.warning(`Retry ${attempt}/${MAX_RETRIES - 1} after API request error (${reason}); waiting ${waitMs} ms`);
-                    await new Promise((resolve) => setTimeout(resolve, waitMs));
-                }
-            }
-
-            throw new Error(`API request failed after ${MAX_RETRIES} attempts: ${url}`);
-        },
-        async close() {
-            await context.close();
-        },
-    };
 }
 
-async function fetchReviews({ apiClient, productUrl, productId, resultsWanted, maxPages, keywordReview }) {
+function describeError(error) {
+    return String(error?.message || error).split(/\r?\n/, 1)[0];
+}
+
+function isRetryableStatus(status) {
+    return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function extractErrorMessage(body, status) {
+    try {
+        const parsed = JSON.parse(body);
+        const reason = parsed?.errors?.reason ?? parsed?.error ?? parsed?.message;
+        if (typeof reason === 'string' && reason.trim()) return `${reason} (HTTP ${status})`;
+    } catch {
+        // Non-JSON error bodies fall back to the status code below.
+    }
+    return `HTTP ${status}`;
+}
+
+function createApiClient(proxyUrl) {
+    return new Impit({
+        browser: BROWSER_PROFILE,
+        timeout: REQUEST_TIMEOUT_MS,
+        ...(proxyUrl ? { proxyUrl } : {}),
+    });
+}
+
+async function requestPage(client, { productId, referer, offset }) {
+    const apiUrl = new URL(`${REVIEWS_HOST}/atlas/v1/reviews/v1/item/${productId}/reviews`);
+    apiUrl.searchParams.set('page.size', String(PAGE_SIZE));
+    apiUrl.searchParams.set('page.offset', String(offset));
+    apiUrl.searchParams.set('projections', 'reviews.full');
+
+    let lastError;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const response = await client.fetch(apiUrl.href, {
+                headers: {
+                    'X-Kroger-Channel': 'WEB',
+                    Referer: referer,
+                    Accept: 'application/json, text/plain, */*',
+                },
+            });
+            const { status } = response;
+            const body = await response.text();
+            if (status >= 200 && status < 300) {
+                try {
+                    return JSON.parse(body);
+                } catch {
+                    throw new Error(`Received a non-JSON response (HTTP ${status})`);
+                }
+            }
+
+            const message = extractErrorMessage(body, status);
+            if (!isRetryableStatus(status)) {
+                const error = new Error(message);
+                error.retryable = false;
+                throw error;
+            }
+            lastError = new Error(message);
+        } catch (error) {
+            if (error.retryable === false) throw error;
+            lastError = error;
+        }
+
+        if (attempt < MAX_RETRIES) {
+            const waitMs =
+                Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS) +
+                Math.floor(Math.random() * 400);
+            log.warning(
+                `Kroger reviews request failed for ${productId} page ${offset} (${describeError(lastError)}); ` +
+                    `retrying ${attempt}/${MAX_RETRIES - 1} in ${waitMs} ms`,
+            );
+            await sleep(waitMs);
+        }
+    }
+
+    throw lastError;
+}
+
+async function fetchReviews({ client, productUrl, productId, resultsWanted, maxPages, keywordReview }) {
     const reviews = [];
     const seen = new Set();
+    let fetchedAnyPage = false;
 
-    for (let page = 0; page < maxPages && reviews.length < resultsWanted; page++) {
-        const offset = page;
-        const apiUrl = new URL(`https://www.kroger.com/atlas/v1/reviews/v1/item/${productId}/reviews`);
-        apiUrl.searchParams.set('page.size', String(PAGE_SIZE));
-        apiUrl.searchParams.set('page.offset', String(offset));
-        apiUrl.searchParams.set('projections', 'reviews.full');
+    for (let offset = 0; offset < maxPages && reviews.length < resultsWanted; offset++) {
+        let payload;
+        try {
+            payload = await requestPage(client, { productId, referer: productUrl, offset });
+            fetchedAnyPage = true;
+        } catch (error) {
+            const reason = describeError(error);
+            if (offset === 0) {
+                log.warning(
+                    `Could not fetch the first review page for ${productId} (${reason}); skipping this product`,
+                );
+            } else {
+                log.warning(
+                    `Stopping pagination for ${productId} at page ${offset} after repeated errors (${reason}); ` +
+                        `keeping ${reviews.length} review(s) already collected`,
+                );
+            }
+            break;
+        }
 
-        const payload = await apiClient.fetchJson(apiUrl.href);
         const pageReviews = payload?.data?.reviews?.product?.reviews;
         if (!Array.isArray(pageReviews)) {
-            throw new Error(`Review array missing for ${productId}; response shape may have changed`);
+            log.warning(`Unexpected review response shape for ${productId} page ${offset}; stopping this product`);
+            break;
         }
 
         for (const review of pageReviews) {
-            const reviewText = String(review.reviewText ?? '');
-            if (keywordReview && !reviewText.toLowerCase().includes(keywordReview.toLowerCase())) continue;
+            const reviewText = String(review?.reviewText ?? '');
+            if (keywordReview && !reviewText.toLowerCase().includes(keywordReview)) continue;
 
             const record = cleanReview(review, productUrl, productId);
             if (!record) continue;
 
-            const key = review.id ?? review.reviewId ?? review.submissionId ?? JSON.stringify(record);
+            const key = review?.id ?? review?.reviewId ?? review?.submissionId ?? JSON.stringify(record);
             if (seen.has(key)) continue;
             seen.add(key);
             reviews.push(record);
@@ -152,16 +197,21 @@ async function fetchReviews({ apiClient, productUrl, productId, resultsWanted, m
         }
 
         const hasMore = payload?.meta?.reviews?.page?.hasMore;
-        if (!pageReviews.length || hasMore === false || pageReviews.length < PAGE_SIZE) break;
+        const totalPages = Number(payload?.meta?.reviews?.totalPages);
+        const reachedLastPage =
+            pageReviews.length < PAGE_SIZE ||
+            hasMore === false ||
+            (Number.isFinite(totalPages) && offset + 1 >= totalPages);
+
+        if (!pageReviews.length || reachedLastPage) break;
     }
 
-    return reviews;
+    return { reviews, fetchedAnyPage };
 }
 
 await Actor.init();
 
 let exitCode = 0;
-let apiClient;
 
 try {
     const input = (await Actor.getInput()) || {};
@@ -176,9 +226,7 @@ try {
     const resultsWanted = Number.isFinite(Number(resultsWantedRaw))
         ? Math.max(1, Math.floor(Number(resultsWantedRaw)))
         : 20;
-    const maxPages = Number.isFinite(Number(maxPagesRaw))
-        ? Math.max(1, Math.floor(Number(maxPagesRaw)))
-        : 10;
+    const maxPages = Number.isFinite(Number(maxPagesRaw)) ? Math.max(1, Math.floor(Number(maxPagesRaw))) : 10;
 
     if (!Array.isArray(startUrls) || startUrls.length === 0) {
         throw new Error('Provide at least one Kroger product URL in startUrls.');
@@ -187,20 +235,26 @@ try {
     const productUrls = startUrls.map(getUrlValue).filter(Boolean);
     const proxyEnabled = Boolean(proxyConfiguration?.useApifyProxy);
     const customProxyUrls = Array.isArray(proxyConfiguration?.proxyUrls) && proxyConfiguration.proxyUrls.length > 0;
-    const proxyConfig = (proxyEnabled || customProxyUrls) && Actor.isAtHome()
-        ? await Actor.createProxyConfiguration({ ...proxyConfiguration })
-        : null;
-    const proxyUrl = proxyConfig ? await proxyConfig.newUrl() : undefined;
+    const useProxy = proxyEnabled || customProxyUrls;
 
-    if ((proxyEnabled || customProxyUrls) && !Actor.isAtHome()) {
+    let proxyUrl;
+    if (useProxy && Actor.isAtHome()) {
+        const proxyConfig = await Actor.createProxyConfiguration({ ...proxyConfiguration });
+        proxyUrl = proxyConfig ? await proxyConfig.newUrl() : undefined;
+    } else if (useProxy) {
         log.info('Skipping Apify Proxy for local execution.');
     }
 
-    log.info('Starting Patchright Chrome API extraction');
-    apiClient = await createApiClient(proxyUrl);
-    log.info(`Starting Kroger review extraction | urls=${productUrls.length} | target=${resultsWanted} | max_pages=${maxPages}`);
+    const client = createApiClient(proxyUrl);
+    const keyword = String(keywordReview || '').trim();
+
+    log.info(
+        `Starting Kroger review extraction | urls=${productUrls.length} | target=${resultsWanted} | max_pages=${maxPages}`,
+    );
 
     let totalSaved = 0;
+    let fetchedProducts = 0;
+
     for (const productUrl of productUrls) {
         if (totalSaved >= resultsWanted) break;
 
@@ -210,14 +264,16 @@ try {
             continue;
         }
 
-        const batch = await fetchReviews({
-            apiClient,
+        const { reviews: batch, fetchedAnyPage } = await fetchReviews({
+            client,
             productUrl: product.canonicalUrl,
             productId: product.productId,
             resultsWanted: resultsWanted - totalSaved,
             maxPages,
-            keywordReview: String(keywordReview || '').trim(),
+            keywordReview: keyword,
         });
+
+        if (fetchedAnyPage) fetchedProducts++;
 
         if (batch.length) {
             await Dataset.pushData(batch);
@@ -228,16 +284,21 @@ try {
         }
     }
 
-    if (totalSaved === 0) throw new Error('No reviews were returned for the supplied product URLs.');
+    if (totalSaved === 0 && fetchedProducts === 0) {
+        throw new Error('Kroger review data could not be fetched for any supplied product URL.');
+    }
+
+    if (totalSaved === 0) {
+        log.warning(
+            'No reviews matched the supplied product URLs and filters. ' +
+                'The products may have no public reviews or the keyword filter may be too strict.',
+        );
+    }
+
     log.info(`Finished | saved=${totalSaved} | requested=${resultsWanted}`);
 } catch (error) {
     exitCode = 1;
-    const reason = String(error.message || error).split(/\r?\n/, 1)[0];
-    log.error(`Actor failed: ${reason}`);
+    log.error(`Actor failed: ${describeError(error)}`);
 } finally {
-    try {
-        if (apiClient) await apiClient.close();
-    } finally {
-        await Actor.exit({ exitCode });
-    }
+    await Actor.exit({ exitCode });
 }

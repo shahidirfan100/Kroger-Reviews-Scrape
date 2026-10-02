@@ -4,25 +4,73 @@
 
 - Endpoint: `https://www.kroger.com/atlas/v1/reviews/v1/item/{gtin13}/reviews`
 - Method: `GET`
-- Required request header: `X-Kroger-Channel: WEB`
-- Context header: `Referer` set to the supplied product URL
-- Query parameters: `page.size`, `page.offset`, and `projections=reviews.full`
-- Authentication: None observed for public review data
-- Pagination: 64-record pages using a zero-based page-index `page.offset` (`0`, `1`, ...); `meta.reviews.page.hasMore` indicates continuation
+- Request headers: `X-Kroger-Channel: WEB`, `Referer` set to the supplied product URL, and `Accept: application/json, text/plain, */*`
+- Query parameters: `page.size=64`, `page.offset`, and `projections=reviews.full`
+- Authentication: none required for public review data
+- Pagination: `page.offset` is a **zero-based page index** (`0`, `1`, ...) where each page holds `page.size` records. `meta.reviews.totalPages`, `meta.reviews.totalElements`, and `meta.reviews.page.hasMore` describe the set.
 - Response path: `data.reviews.product.reviews`
 - Output coverage: product URL and GTIN plus the non-empty fields returned on each review
 
-The endpoint was selected because it returns structured JSON review records and explicit pagination. Patchright Chrome now fetches this endpoint directly from an in-origin browser request; the product page is never navigated for extraction and no HTML is parsed. The API request pattern and response shape were independently corroborated by a public Kroger implementation that uses the same Atlas review endpoint.
+The endpoint returns structured JSON review records and explicit pagination. Impit is used to replay the request with a browser-consistent TLS/HTTP/2 fingerprint and generated browser headers; no browser is launched and no HTML is parsed. The endpoint was independently corroborated by a public Kroger implementation that uses the same Atlas review endpoint.
+
+## Request client
+
+- `impit` (latest, `^0.14.5`) with `browser: 'chrome'`.
+- One `Impit` instance is reused for every request so the cookie jar and connection pool are shared.
+- No homepage warm-up, cookies, or tokens are required; the endpoint responds to a cold request.
+- Proxy support is passed to the `Impit` constructor as `proxyUrl` when Apify Proxy or custom proxies are configured.
+
+## Header requirements (directly tested)
+
+| Request profile                           | Result               |
+| ----------------------------------------- | -------------------- |
+| No extra headers                          | HTTP 200, 64 reviews |
+| Only `X-Kroger-Channel: WEB`              | HTTP 200, 64 reviews |
+| Only `Referer`                            | HTTP 200, 64 reviews |
+| Full headers (channel + referer + accept) | HTTP 200, 64 reviews |
+
+The endpoint does not require the channel or referer headers, but the actor keeps the documented `X-Kroger-Channel` and product `Referer` values because they match the known working flow and are harmless.
+
+## Browser-profile comparison
+
+`impit` profiles were tested directly against `item/0001111050315/reviews`.
+
+| Profile                    | Result                          |
+| -------------------------- | ------------------------------- |
+| `chrome`                   | HTTP 200, 64 reviews (selected) |
+| `chrome131`                | HTTP 200, 64 reviews            |
+| `chrome142`                | HTTP 200, 64 reviews            |
+| `chrome151`                | HTTP 200, 64 reviews            |
+| `firefox144`               | HTTP 200, 64 reviews            |
+| `ios18`                    | HTTP 200, 64 reviews            |
+| `okhttp5`                  | error, no data                  |
+| No emulation (plain fetch) | request timeout, blocked        |
+
+`chrome` is selected because it matches the browser flow used for discovery, is the Impit default, and passed repeated reliability checks (8/8 and 6/6 consecutive requests). Every Chrome-family and Firefox profile tested behaved identically, so no target-specific override is needed.
+
+## Pagination and server-side flakiness
+
+- `meta.reviews.totalPages` drives the stop condition alongside `hasMore` and a short page.
+- The Atlas backend intermittently fails individual pages with HTTP 500 bodies such as:
+    - `{"errors":{"reason":"timeout of 1000ms exceeded","code":"httpClient:ECONNABORTED"}}`
+    - `{"errors":{"reason":"Open Circuit: reviews::getReviews","code":"OPENBREAKER"}}`
+- These failures were reproduced across different products and page offsets, including cases where `page.offset=0` and `page.offset=2` succeed while `page.offset=1` fails repeatedly. The failure is in Kroger's own reviews service, not in the request profile: all tested profiles behaved the same way.
+- Because of this, the actor does bounded retries with exponential backoff and jitter, then:
+    - if the first page fails, it skips that product with a warning and continues;
+    - if a later page fails, it keeps the reviews already collected and stops pagination for that product instead of failing the whole run.
 
 ## Candidate matrix
 
-| Candidate | Header profile | Status/body | Fields | Pagination | Decision |
-|---|---|---:|---:|---|---|
-| Kroger Atlas reviews | Same-origin browser API request | JSON review payload | Rich review object with rating, text, votes, timestamps, identifiers, and flags | `page.size`, zero-based `page.offset`, `hasMore` | Selected |
-| Kroger product page | Browser navigation | HTTP 403 in local browser | Not usable without rendering | Not applicable | Rejected for extraction |
+| Candidate | Client profile | Status/body | Fields | Pagination | Decision |
+|---|---|---|---|---:|---|---|
+| Kroger Atlas reviews | `impit` `chrome` | JSON review payload | Rich review object with rating, text, votes, timestamps, identifiers, and flags | `page.size`, zero-based `page.offset`, `totalPages`/`hasMore` | Selected |
+| Kroger Atlas reviews | Patched headful Chrome (previous version) | JSON when it worked, but headful browser runtime was fragile and slow | Same | Same | Replaced by `impit` |
+| No-emulation HTTP | plain fetch | request timeout / blocked | Not usable | Not applicable | Rejected |
+| `okhttp5` emulation | `impit` `okhttp5` | error, no payload | Not usable | Not applicable | Rejected |
+| Kroger product page | browser navigation | HTTP 403 in local environment | Not usable without rendering | Not applicable | Rejected for extraction |
 | Kroger public Products API | OAuth API | Requires application authorization | Product catalog, not product reviews | Catalog pagination | Rejected |
-| Generic Bazaarvoice Conversations API | Passkey-based | Requires retailer/client passkey | Review data when authorized | `Limit`/`Offset` | Rejected because it adds an external credential requirement |
-| HTML/JSON-LD fallback | Page response | Blocked in local environment | Product markup only, not the complete review set | Not reliable | Rejected |
+| Generic Bazaarvoice Conversations API | passkey-based | Requires retailer/client passkey | Review data when authorized | `Limit`/`Offset` | Rejected because it adds an external credential requirement |
+| HTML/JSON-LD fallback | page response | Blocked in local environment | Product markup only, not the complete review set | Not reliable | Rejected |
 
 ## Selection score
 
@@ -30,8 +78,10 @@ The Atlas endpoint scores above the updater threshold: direct JSON (+30), rich r
 
 ## Resilience notes
 
-- Patchright Chrome supplies the browser-consistent request profile and API-only browser transport.
-- The actor sends only the Kroger-specific channel and product referer headers; it does not override browser fingerprint headers.
-- HTTP 403, 429, and 5xx responses receive bounded retries with backoff.
+- `impit` supplies the browser-consistent request profile; no browser is installed or launched.
+- The actor overrides only Kroger-specific request headers and lets Impit generate fingerprint headers.
+- HTTP 500, 429, 408, 425, and 5xx responses receive bounded retries with backoff and jitter; permanent 4xx responses are not retried.
+- A failed later page stops pagination for that product but keeps already-collected reviews; a failed first page skips only that product.
 - Missing or changed response keys produce a warning and stop that product cleanly instead of creating empty records.
 - Null, blank, empty-array, and empty-object values are removed recursively before dataset writes.
+- Zero matching reviews from valid products is reported as a warning with a successful run, not a hard failure.
