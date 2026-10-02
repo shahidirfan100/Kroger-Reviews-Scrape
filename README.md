@@ -46,7 +46,7 @@ Kroger Reviews Scraper collects public customer reviews from Kroger product page
 | -------------------- | ------- | -------- | --------------------- | ---------------------------------------------------------------------------------- |
 | `startUrls`          | Array   | Yes      | Prefilled example URL | One or more Kroger product URLs, including URLs with fulfillment query parameters. |
 | `results_wanted`     | Integer | No       | `20`                  | Maximum number of reviews saved across all supplied products.                      |
-| `max_pages`          | Integer | No       | `10`                  | Maximum number of 64-review pages requested per product.                           |
+| `max_pages`          | Integer | No       | `10`                  | Maximum number of review pages requested per product (up to 100 reviews per page). |
 | `keywordReview`      | String  | No       | Empty                 | Optional case-insensitive filter applied to `reviewText`.                          |
 | `proxyConfiguration` | Object  | No       | Disabled              | Proxy settings for reliable scheduled or larger runs.                              |
 

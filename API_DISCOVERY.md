@@ -5,7 +5,7 @@
 - Endpoint: `https://www.kroger.com/atlas/v1/reviews/v1/item/{gtin13}/reviews`
 - Method: `GET`
 - Request headers: `X-Kroger-Channel: WEB`, `Referer` set to the supplied product URL, and `Accept: application/json, text/plain, */*`
-- Query parameters: `page.size=64`, `page.offset`, and `projections=reviews.full`
+- Query parameters: `page.size=100`, `page.offset`, and `projections=reviews.full`
 - Authentication: none required for public review data
 - Pagination: `page.offset` is a **zero-based page index** (`0`, `1`, ...) where each page holds `page.size` records. `meta.reviews.totalPages`, `meta.reviews.totalElements`, and `meta.reviews.page.hasMore` describe the set.
 - Response path: `data.reviews.product.reviews`
@@ -22,12 +22,12 @@ The endpoint returns structured JSON review records and explicit pagination. Imp
 
 ## Header requirements (directly tested)
 
-| Request profile                           | Result               |
-| ----------------------------------------- | -------------------- |
-| No extra headers                          | HTTP 200, 64 reviews |
-| Only `X-Kroger-Channel: WEB`              | HTTP 200, 64 reviews |
-| Only `Referer`                            | HTTP 200, 64 reviews |
-| Full headers (channel + referer + accept) | HTTP 200, 64 reviews |
+| Request profile                           | Result                |
+| ----------------------------------------- | --------------------- |
+| No extra headers                          | HTTP 200, review data |
+| Only `X-Kroger-Channel: WEB`              | HTTP 200, review data |
+| Only `Referer`                            | HTTP 200, review data |
+| Full headers (channel + referer + accept) | HTTP 200, review data |
 
 The endpoint does not require the channel or referer headers, but the actor keeps the documented `X-Kroger-Channel` and product `Referer` values because they match the known working flow and are harmless.
 
@@ -35,29 +35,33 @@ The endpoint does not require the channel or referer headers, but the actor keep
 
 `impit` profiles were tested directly against `item/0001111050315/reviews`.
 
-| Profile                    | Result                          |
-| -------------------------- | ------------------------------- |
-| `chrome`                   | HTTP 200, 64 reviews (selected) |
-| `chrome131`                | HTTP 200, 64 reviews            |
-| `chrome142`                | HTTP 200, 64 reviews            |
-| `chrome151`                | HTTP 200, 64 reviews            |
-| `firefox144`               | HTTP 200, 64 reviews            |
-| `ios18`                    | HTTP 200, 64 reviews            |
-| `okhttp5`                  | error, no data                  |
-| No emulation (plain fetch) | request timeout, blocked        |
+| Profile                    | Result                           |
+| -------------------------- | -------------------------------- |
+| `chrome`                   | HTTP 200, review data (selected) |
+| `chrome131`                | HTTP 200, review data            |
+| `chrome142`                | HTTP 200, review data            |
+| `chrome151`                | HTTP 200, review data            |
+| `firefox144`               | HTTP 200, review data            |
+| `ios18`                    | HTTP 200, review data            |
+| `okhttp5`                  | error, no data                   |
+| No emulation (plain fetch) | request timeout, blocked         |
 
 `chrome` is selected because it matches the browser flow used for discovery, is the Impit default, and passed repeated reliability checks (8/8 and 6/6 consecutive requests). Every Chrome-family and Firefox profile tested behaved identically, so no target-specific override is needed.
 
 ## Pagination and server-side flakiness
 
-- `meta.reviews.totalPages` drives the stop condition alongside `hasMore` and a short page.
-- The Atlas backend intermittently fails individual pages with HTTP 500 bodies such as:
+- `page.offset` is a zero-based page index and `page.size` sets records per page. `meta.reviews.totalPages` drives the stop condition alongside `hasMore` and a short page.
+- `page.size=100` is the largest value that returns reliably. The production reviews service resolves each page through a downstream call that hard-times-out at 1000 ms, so larger page sizes (110+ records actually returned) begin failing with `timeout of 1000ms exceeded`. Requesting 100 records per page therefore covers more products in a single request while remaining inside the service budget.
+- The Atlas backend intermittently returns HTTP 500 for any page, including the first, with bodies such as:
     - `{"errors":{"reason":"timeout of 1000ms exceeded","code":"httpClient:ECONNABORTED"}}`
     - `{"errors":{"reason":"Open Circuit: reviews::getReviews","code":"OPENBREAKER"}}`
-- These failures were reproduced across different products and page offsets, including cases where `page.offset=0` and `page.offset=2` succeed while `page.offset=1` fails repeatedly. The failure is in Kroger's own reviews service, not in the request profile: all tested profiles behaved the same way.
-- Because of this, the actor does bounded retries with exponential backoff and jitter, then:
-    - if the first page fails, it skips that product with a warning and continues;
-    - if a later page fails, it keeps the reviews already collected and stops pagination for that product instead of failing the whole run.
+- The failure is a global backend circuit breaker, not a request-profile problem: once one request fails, unrelated products in the same run return `Open Circuit` too. Recovery is inconsistent and was observed to take from a few seconds to several minutes. Different `impit` profiles and different page sizes all fail together during an outage.
+- This was tested across many real product URLs (`0001111050315`, `0000000004011`, `0001111041700`, `0001111010014`, `0001111063259`, `0001111091649`, and others). Products with 0 reviews return HTTP 200 with an empty `reviews` array, so empty and unavailable are distinguished correctly.
+- Because of this, the actor:
+    - requests 100 records per page to minimise the number of calls;
+    - retries 408/425/429/5xx responses up to five times with exponential backoff, jitter, and `Retry-After` support;
+    - skips a product with a warning if its first page cannot be fetched;
+    - keeps the reviews already collected and stops pagination for a product if a later page cannot be fetched, instead of failing the whole run.
 
 ## Candidate matrix
 
@@ -80,7 +84,8 @@ The Atlas endpoint scores above the updater threshold: direct JSON (+30), rich r
 
 - `impit` supplies the browser-consistent request profile; no browser is installed or launched.
 - The actor overrides only Kroger-specific request headers and lets Impit generate fingerprint headers.
-- HTTP 500, 429, 408, 425, and 5xx responses receive bounded retries with backoff and jitter; permanent 4xx responses are not retried.
+- Each product is fetched in pages of up to 100 reviews, the largest reliably served page size.
+- HTTP 500, 429, 408, 425, and 5xx responses receive up to five bounded retries with exponential backoff, jitter, and `Retry-After` support; permanent 4xx responses are not retried.
 - A failed later page stops pagination for that product but keeps already-collected reviews; a failed first page skips only that product.
 - Missing or changed response keys produce a warning and stop that product cleanly instead of creating empty records.
 - Null, blank, empty-array, and empty-object values are removed recursively before dataset writes.

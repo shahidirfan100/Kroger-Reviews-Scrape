@@ -1,55 +1,53 @@
 {
-  "title": "Kroger Reviews Scraper",
-  "description": "Collect public customer reviews from one or more Kroger product URLs.",
-  "type": "object",
-  "schemaVersion": 1,
-  "properties": {
-    "startUrls": {
-      "title": "Kroger product URLs",
-      "type": "array",
-      "description": "One or more Kroger product page URLs. Product URLs may include fulfillment or other query parameters.",
-      "editor": "stringList",
-      "prefill": [
-        "https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315"
-      ],
-      "items": {
-        "type": "string"
-      }
+    "title": "Kroger Reviews Scraper",
+    "description": "Collect public customer reviews from one or more Kroger product URLs.",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "startUrls": {
+            "title": "Kroger product URLs",
+            "type": "array",
+            "description": "One or more Kroger product page URLs. Product URLs may include fulfillment or other query parameters.",
+            "editor": "stringList",
+            "prefill": ["https://www.kroger.com/p/kroger-heavy-whipping-cream-pint/0001111050315"],
+            "items": {
+                "type": "string"
+            }
+        },
+        "keywordReview": {
+            "title": "Review keyword filter",
+            "type": "string",
+            "description": "Optional case-insensitive text filter applied to reviewText.",
+            "editor": "textfield"
+        },
+        "results_wanted": {
+            "title": "Results wanted",
+            "type": "integer",
+            "description": "Maximum number of reviews to save across all supplied products.",
+            "minimum": 1,
+            "default": 20,
+            "prefill": 20,
+            "editor": "number"
+        },
+        "max_pages": {
+            "title": "Maximum review pages",
+            "type": "integer",
+            "description": "Maximum number of review pages to request per product (up to 100 reviews per page).",
+            "minimum": 1,
+            "default": 10,
+            "prefill": 2,
+            "editor": "number"
+        },
+        "proxyConfiguration": {
+            "title": "Proxy configuration",
+            "type": "object",
+            "description": "Use Apify Proxy for stable access on cloud runs.",
+            "editor": "proxy",
+            "default": {
+                "useApifyProxy": false
+            }
+        }
     },
-    "keywordReview": {
-      "title": "Review keyword filter",
-      "type": "string",
-      "description": "Optional case-insensitive text filter applied to reviewText.",
-      "editor": "textfield"
-    },
-    "results_wanted": {
-      "title": "Results wanted",
-      "type": "integer",
-      "description": "Maximum number of reviews to save across all supplied products.",
-      "minimum": 1,
-      "default": 20,
-      "prefill": 20,
-      "editor": "number"
-    },
-    "max_pages": {
-      "title": "Maximum review pages",
-      "type": "integer",
-      "description": "Maximum number of 64-review API pages to request for each product.",
-      "minimum": 1,
-      "default": 10,
-      "prefill": 2,
-      "editor": "number"
-    },
-    "proxyConfiguration": {
-      "title": "Proxy configuration",
-      "type": "object",
-      "description": "Use Apify Proxy for stable access on cloud runs.",
-      "editor": "proxy",
-      "default": {
-        "useApifyProxy": false
-      }
-    }
-  },
-  "required": ["startUrls"],
-  "additionalProperties": false
+    "required": ["startUrls"],
+    "additionalProperties": false
 }
