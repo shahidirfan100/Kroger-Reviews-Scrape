@@ -2,11 +2,11 @@ import { Actor, log } from 'apify';
 import { Dataset } from 'crawlee';
 import { Impit } from 'impit';
 
-const PAGE_SIZE = 100;
-const MAX_RETRIES = 5;
+const PAGE_SIZE = 64;
+const MAX_RETRIES = 4;
 const REQUEST_TIMEOUT_MS = 30_000;
-const RETRY_BASE_DELAY_MS = 1_500;
-const RETRY_MAX_DELAY_MS = 15_000;
+const RETRY_BASE_DELAY_MS = 1_000;
+const RETRY_MAX_DELAY_MS = 8_000;
 const BROWSER_PROFILE = 'chrome';
 const REVIEWS_HOST = 'https://www.kroger.com';
 
@@ -77,15 +77,6 @@ function isRetryableStatus(status) {
     return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
-function parseRetryAfter(value) {
-    if (!value) return undefined;
-    const seconds = Number(value);
-    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, RETRY_MAX_DELAY_MS);
-    const date = Date.parse(value);
-    if (Number.isFinite(date)) return Math.min(Math.max(date - Date.now(), 0), RETRY_MAX_DELAY_MS);
-    return undefined;
-}
-
 function extractErrorMessage(body, status) {
     try {
         const parsed = JSON.parse(body);
@@ -138,17 +129,16 @@ async function requestPage(client, { productId, referer, offset }) {
                 error.retryable = false;
                 throw error;
             }
-            const error = new Error(message);
-            error.retryAfterMs = parseRetryAfter(response.headers.get('retry-after'));
-            lastError = error;
+            lastError = new Error(message);
         } catch (error) {
             if (error.retryable === false) throw error;
             lastError = error;
         }
 
         if (attempt < MAX_RETRIES) {
-            const backoffMs = Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS);
-            const waitMs = Math.max(lastError?.retryAfterMs ?? 0, backoffMs) + Math.floor(Math.random() * 500);
+            const waitMs =
+                Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS) +
+                Math.floor(Math.random() * 400);
             log.warning(
                 `Kroger reviews request failed for ${productId} page ${offset} (${describeError(lastError)}); ` +
                     `retrying ${attempt}/${MAX_RETRIES - 1} in ${waitMs} ms`,
