@@ -48,7 +48,7 @@ Kroger Reviews Scraper collects public customer reviews from Kroger product page
 | `results_wanted`     | Integer | No       | `20`                   | Maximum number of reviews saved across all supplied products.                      |
 | `max_pages`          | Integer | No       | `10`                   | Maximum number of review pages requested per product.                              |
 | `keywordReview`      | String  | No       | Empty                 | Optional case-insensitive filter applied to `reviewText`.                          |
-| `proxyConfiguration` | Object  | No       | Disabled              | Proxy settings for reliable scheduled or larger runs.                              |
+| `proxyConfiguration` | Object  | No       | Apify Residential      | Proxy settings; Apify Residential proxy is used by default for stable scheduled or larger runs. |
 
 ## Usage Examples
 

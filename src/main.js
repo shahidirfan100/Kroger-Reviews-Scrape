@@ -5,7 +5,8 @@ import { Impit } from 'impit';
 const PAGE_SIZE = 64;
 const PAGE_SIZE_FALLBACKS = [32, 24, 20];
 const MAX_ATTEMPTS = 6;
-const RECOVERY_MAX_ATTEMPTS = 10;
+const RECOVERY_MAX_ATTEMPTS = 8;
+const MAX_RECOVERY_ROUNDS = 5;
 const REQUEST_TIMEOUT_MS = 30_000;
 const RETRY_BASE_DELAY_MS = 800;
 const RETRY_MAX_DELAY_MS = 5_000;
@@ -105,7 +106,7 @@ function describeError(error) {
 }
 
 function isRetryableStatus(status) {
-    return status === 408 || status === 425 || status === 429 || status >= 500;
+    return status === 403 || status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 function extractErrorMessage(body, status) {
@@ -203,7 +204,7 @@ async function requestPage({ pool, productId, referer, offset, size, attempts = 
         if (attempt < attempts) {
             const waitMs = computeBackoffMs(attempt, retryAfterMs);
             const nextProfile = BROWSER_PROFILES[attempt % BROWSER_PROFILES.length];
-            log.warning(
+            log.debug(
                 `Kroger reviews request failed for ${productId} page ${offset} size ${size} ` +
                     `(${describeError(lastError)}); retrying ${attempt}/${attempts - 1} with profile=${nextProfile} in ${waitMs} ms`,
             );
@@ -239,14 +240,27 @@ async function fetchFirstPage({ pool, productId, referer, attempts }) {
     throw lastError;
 }
 
-async function processProduct({ pool, productUrl, productId, resultsWanted, maxPages, keyword, attempts, onPage }) {
-    const seen = new Set();
+async function processProduct({
+    pool,
+    productUrl,
+    productId,
+    resultsWanted,
+    maxPages,
+    keyword,
+    attempts,
+    onPage,
+    seen = new Set(),
+    startOffset = 0,
+    startSize = PAGE_SIZE,
+}) {
     let saved = 0;
     let fetchedAnyPage = false;
     let firstPageFailed = false;
-    let size = PAGE_SIZE;
+    let incomplete = false;
+    let nextOffset = startOffset;
+    let size = startSize;
 
-    for (let offset = 0; offset < maxPages && saved < resultsWanted; offset++) {
+    for (let offset = startOffset; offset < maxPages && saved < resultsWanted; offset++) {
         let payload;
         try {
             if (offset === 0) {
@@ -259,13 +273,15 @@ async function processProduct({ pool, productUrl, productId, resultsWanted, maxP
             fetchedAnyPage = true;
         } catch (error) {
             const reason = describeError(error);
+            nextOffset = offset;
             if (offset === 0) {
                 firstPageFailed = true;
                 log.warning(`Could not fetch the first review page for ${productId} (${reason}); deferring this product`);
             } else {
+                incomplete = true;
                 log.warning(
-                    `Stopping pagination for ${productId} at page ${offset} after repeated errors (${reason}); ` +
-                        `keeping ${saved} review(s) already collected`,
+                    `Pausing ${productId} at page ${offset} after repeated errors (${reason}); ` +
+                        `keeping ${seen.size} review(s) and retrying this product later`,
                 );
             }
             break;
@@ -304,10 +320,15 @@ async function processProduct({ pool, productUrl, productId, resultsWanted, maxP
             hasMore === false ||
             (Number.isFinite(totalPages) && offset + 1 >= totalPages);
 
-        if (!pageReviews.length || reachedLastPage) break;
+        nextOffset = offset + 1;
+
+        if (!pageReviews.length || reachedLastPage) {
+            incomplete = false;
+            break;
+        }
     }
 
-    return { saved, fetchedAnyPage, firstPageFailed };
+    return { saved, fetchedAnyPage, firstPageFailed, incomplete, nextOffset, size, seen };
 }
 
 await Actor.init();
@@ -349,19 +370,19 @@ try {
     const pool = createClientPool(proxyUrl);
     const keyword = String(keywordReview || '').trim();
 
+    log.info(proxyUrl ? 'Proxy enabled for Kroger requests.' : 'No proxy in use; sending direct requests.');
     log.info(
         `Starting Kroger review extraction | urls=${productUrls.length} | target=${resultsWanted} | max_pages=${maxPages}`,
     );
 
     let totalSaved = 0;
     let fetchedProducts = 0;
-    const deferredProducts = [];
 
-    const runProduct = async (productUrl, attempts) => {
+    const runProduct = async (productUrl, attempts, resume) => {
         const product = getProductId(productUrl);
         if (!product) {
             log.warning(`Skipping unsupported Kroger product URL: ${productUrl}`);
-            return;
+            return null;
         }
 
         const outcome = await processProduct({
@@ -377,28 +398,53 @@ try {
                 totalSaved += batch.length;
                 log.info(`Saved ${batch.length} reviews for ${product.productId}; total=${totalSaved}/${resultsWanted}`);
             },
+            ...(resume
+                ? { seen: resume.seen, startOffset: resume.startOffset, startSize: resume.size }
+                : {}),
         });
 
         if (outcome.fetchedAnyPage) fetchedProducts++;
-        else if (outcome.firstPageFailed) deferredProducts.push(productUrl);
 
-        if (outcome.saved === 0 && outcome.fetchedAnyPage) {
+        if (!resume && outcome.saved === 0 && outcome.fetchedAnyPage && !outcome.incomplete) {
             log.warning(`No matching reviews found for ${product.productId}`);
         }
+
+        if (outcome.firstPageFailed) return { productUrl, kind: 'first' };
+        if (outcome.incomplete && totalSaved < resultsWanted) {
+            return {
+                productUrl,
+                kind: 'resume',
+                seen: outcome.seen,
+                startOffset: outcome.nextOffset,
+                size: outcome.size,
+            };
+        }
+        return null;
     };
 
+    let pending = [];
     for (const productUrl of productUrls) {
         if (totalSaved >= resultsWanted) break;
-        await runProduct(productUrl, MAX_ATTEMPTS);
+        const item = await runProduct(productUrl, MAX_ATTEMPTS);
+        if (item) pending.push(item);
     }
 
-    if (totalSaved < resultsWanted && deferredProducts.length) {
+    for (let round = 1; round <= MAX_RECOVERY_ROUNDS && totalSaved < resultsWanted && pending.length; round++) {
         await sleep(PRODUCT_RECOVERY_DELAY_MS);
-        log.info(`Recovery pass: retrying ${deferredProducts.length} product(s) whose first page failed`);
-        for (const productUrl of deferredProducts) {
+        log.info(
+            `Recovery round ${round}/${MAX_RECOVERY_ROUNDS}: retrying ${pending.length} product step(s) after transient failures`,
+        );
+
+        const next = [];
+        for (const item of pending) {
             if (totalSaved >= resultsWanted) break;
-            await runProduct(productUrl, RECOVERY_MAX_ATTEMPTS);
+            const resume = item.kind === 'resume'
+                ? { seen: item.seen, startOffset: item.startOffset, size: item.size }
+                : undefined;
+            const again = await runProduct(item.productUrl, RECOVERY_MAX_ATTEMPTS, resume);
+            if (again) next.push(again);
         }
+        pending = next;
     }
 
     if (totalSaved === 0 && fetchedProducts === 0) {

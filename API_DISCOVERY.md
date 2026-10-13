@@ -87,10 +87,11 @@ The Atlas endpoint scores above the updater threshold: direct JSON (+30), rich r
 
 - `impit` supplies the browser-consistent request profile; no browser is installed or launched.
 - The actor overrides only Kroger-specific request headers and lets Impit generate fingerprint headers.
+- Apify Residential proxy is the default `proxyConfiguration` for cloud runs, which keeps requests on residential IPs and avoids datacenter-IP throttling.
 - One Impit client is reused per browser profile; profiles are rotated only between retry attempts.
 - HTTP 500, 429, 408, 425, and 5xx responses receive bounded retries with backoff and jitter; permanent 4xx responses are not retried.
 - The first page falls back through `page.size=64 → 32 → 24 → 20`; the size that works is locked for the product.
-- A product whose first page fails is deferred and retried once more after other products before it is dropped.
+- A product that fails on its first page, or that pauses mid-pagination, is deferred and retried once more after all other products with a larger attempt budget. A resumed product continues from the failed offset and reuses its dedupe set, so no reviews are lost or duplicated.
 - A failed later page stops pagination for that product but keeps already-collected reviews; a failed first page skips only that product.
 - Response keys are resolved case-insensitively and validated before use; missing or changed keys produce a warning and stop that product cleanly instead of creating empty records.
 - Null, blank, empty-array, and empty-object values are removed recursively before dataset writes.

@@ -44,10 +44,11 @@
     "proxyConfiguration": {
       "title": "Proxy configuration",
       "type": "object",
-      "description": "Use Apify Proxy for stable access on cloud runs.",
+      "description": "Proxy used for requests. Apify Residential proxy is enabled by default for stable access on cloud runs; switch to No proxy only for local testing.",
       "editor": "proxy",
       "default": {
-        "useApifyProxy": false
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
       }
     }
   },
