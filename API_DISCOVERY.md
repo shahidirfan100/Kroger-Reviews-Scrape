@@ -33,20 +33,22 @@ The endpoint does not require the channel or referer headers, but the actor keep
 
 ## Browser-profile comparison
 
-`impit` profiles were tested directly against `item/0001111050315/reviews`.
+Every profile supported by the installed `impit` version was tested directly against
+`item/0001111050315/reviews` (two consecutive requests each).
 
-| Profile                    | Result                          |
-| -------------------------- | ------------------------------- |
-| `chrome`                   | HTTP 200, 64 reviews (selected) |
-| `chrome131`                | HTTP 200, 64 reviews            |
-| `chrome142`                | HTTP 200, 64 reviews            |
-| `chrome151`                | HTTP 200, 64 reviews            |
-| `firefox144`               | HTTP 200, 64 reviews            |
-| `ios18`                    | HTTP 200, 64 reviews            |
-| `okhttp5`                  | error, no data                  |
-| No emulation (plain fetch) | request timeout, blocked        |
+| Profile                                                                  | Result                |
+| ------------------------------------------------------------------------ | --------------------- |
+| `chrome`, `chrome100`, `chrome101`, `chrome104`, `chrome107`, `chrome110` | HTTP 200, 32 reviews  |
+| `chrome116`, `chrome124`, `chrome125`, `chrome131`, `chrome136`, `chrome142`, `chrome151` | HTTP 200, 32 reviews |
+| `firefox`, `firefox128`, `firefox133`, `firefox135`, `firefox144`        | HTTP 200, 32 reviews  |
+| `ios18`                                                                  | HTTP 200, 32 reviews  |
+| `okhttp`, `okhttp3`, `okhttp4`, `okhttp5`                                | request error, no data |
+| No emulation (plain fetch)                                               | request timeout, blocked |
 
-`chrome` is selected because it matches the browser flow used for discovery, is the Impit default, and passed repeated reliability checks (8/8 and 6/6 consecutive requests). Every Chrome-family and Firefox profile tested behaved identically, so no target-specific override is needed.
+Every Chrome-family, Firefox-family, and iOS profile behaves identically and reliably. Only the
+`okhttp*` profiles fail, so they are excluded. `chrome` is the primary profile; the actor rotates
+across `chrome`, `chrome131`, `firefox144`, `ios18`, and `chrome142` when a request has to be retried,
+which gives each retry a fresh, browser-consistent TLS/HTTP fingerprint.
 
 ## Pagination and server-side flakiness
 
@@ -55,8 +57,13 @@ The endpoint does not require the channel or referer headers, but the actor keep
     - `{"errors":{"reason":"timeout of 1000ms exceeded","code":"httpClient:ECONNABORTED"}}`
     - `{"errors":{"reason":"Open Circuit: reviews::getReviews","code":"OPENBREAKER"}}`
 - These failures were reproduced across different products and page offsets, including cases where `page.offset=0` and `page.offset=2` succeed while `page.offset=1` fails repeatedly. The failure is in Kroger's own reviews service, not in the request profile: all tested profiles behaved the same way.
-- Because of this, the actor does bounded retries with exponential backoff and jitter, then:
-    - if the first page fails, it skips that product with a warning and continues;
+- The failures arrive in short clusters. During one cluster `page.size=16/40/48/50/64` failed repeatedly while `page.size=20/24/32` succeeded; minutes later every size returned HTTP 200. The failure is therefore transient and partly keyed to the exact request URL, not to the client or headers.
+- Because of this, the actor combines several bounded recovery strategies:
+    - Each request is retried with exponential backoff and jitter, and rotates the browser profile on every attempt so a fresh fingerprint is used.
+    - `Retry-After` is honored for `429`/`503` responses and capped, and permanent `4xx` responses are never retried.
+    - The first page of a product is requested with `page.size=64` and, if it keeps failing, falls back to `page.size=32`, then `24`, then `20`; the size that succeeds is reused for the remaining pages of that product so offset pagination stays aligned.
+    - If a product's first page still fails, the product is deferred and retried once more after all other products, with a larger attempt budget. This rides out a failure cluster instead of dropping the product.
+    - if the first page fails even after recovery, it skips that product with a warning and continues;
     - if a later page fails, it keeps the reviews already collected and stops pagination for that product instead of failing the whole run.
 
 ## Candidate matrix
@@ -80,8 +87,11 @@ The Atlas endpoint scores above the updater threshold: direct JSON (+30), rich r
 
 - `impit` supplies the browser-consistent request profile; no browser is installed or launched.
 - The actor overrides only Kroger-specific request headers and lets Impit generate fingerprint headers.
+- One Impit client is reused per browser profile; profiles are rotated only between retry attempts.
 - HTTP 500, 429, 408, 425, and 5xx responses receive bounded retries with backoff and jitter; permanent 4xx responses are not retried.
+- The first page falls back through `page.size=64 → 32 → 24 → 20`; the size that works is locked for the product.
+- A product whose first page fails is deferred and retried once more after other products before it is dropped.
 - A failed later page stops pagination for that product but keeps already-collected reviews; a failed first page skips only that product.
-- Missing or changed response keys produce a warning and stop that product cleanly instead of creating empty records.
+- Response keys are resolved case-insensitively and validated before use; missing or changed keys produce a warning and stop that product cleanly instead of creating empty records.
 - Null, blank, empty-array, and empty-object values are removed recursively before dataset writes.
 - Zero matching reviews from valid products is reported as a warning with a successful run, not a hard failure.
